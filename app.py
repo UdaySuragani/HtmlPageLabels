@@ -3,6 +3,7 @@ import os
 import PyPDF2
 from bs4 import BeautifulSoup
 import re
+from difflib import SequenceMatcher
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads/'  # Directory to store uploaded files
@@ -35,44 +36,72 @@ def extract_text_from_html(html_path):
     return text
 
 def normalize_text(text):
-    """Normalize text for comparison by removing extra whitespace"""
+    """Normalize text for comparison by removing extra whitespace and special characters"""
     if text is None:
         return ""
-    # Remove extra whitespace and newlines
+
+    # Convert to lowercase
+    text = text.lower()
+
+    # Remove special Unicode characters and normalize whitespace
+    text = re.sub(r'[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000]', ' ', text)  # Various space chars
+    text = re.sub(r'[\u2018\u2019]', "'", text)  # Smart quotes to regular quotes
+    text = re.sub(r'[\u201C\u201D]', '"', text)  # Smart double quotes
+    text = re.sub(r'[\u2013\u2014]', '-', text)  # Dashes
+
+    # Remove non-alphanumeric characters except spaces (keeps only letters, numbers, and spaces)
+    text = re.sub(r'[^a-z0-9\s]', ' ', text)
+
+    # Collapse multiple spaces into one
     text = re.sub(r'\s+', ' ', text)
+
     # Remove leading/trailing whitespace
     text = text.strip()
-    # Convert to lowercase for case-insensitive comparison
-    return text.lower()
+
+    return text
+
+def calculate_similarity(text1, text2):
+    """Calculate similarity between two texts using SequenceMatcher"""
+    if not text1 or not text2:
+        return 0.0
+
+    # Use SequenceMatcher for better text comparison
+    matcher = SequenceMatcher(None, text1, text2)
+    return matcher.ratio()
 
 def compare_content(pdf_text, html_text):
-    """Compare PDF and HTML content"""
+    """Compare PDF and HTML content with improved fuzzy matching"""
     pdf_normalized = normalize_text(pdf_text)
     html_normalized = normalize_text(html_text)
 
-    # Calculate similarity (simple approach: check if main content matches)
-    # For a more lenient comparison, we check if most of the content is present
+    # Check if we extracted content from both files
     if not pdf_normalized or not html_normalized:
         return False, "Unable to extract content from one or both files."
 
-    # Check if contents are similar (allowing for minor formatting differences)
+    # Check for exact match
     if pdf_normalized == html_normalized:
         return True, "Content matches perfectly."
 
-    # Check if HTML contains most of the PDF content (or vice versa)
-    similarity_threshold = 0.8
+    # Check if one contains the other (for subset matches)
     if pdf_normalized in html_normalized or html_normalized in pdf_normalized:
         return True, "Content matches (with formatting differences)."
 
-    # Calculate basic similarity
-    common_chars = sum(1 for a, b in zip(pdf_normalized, html_normalized) if a == b)
-    max_len = max(len(pdf_normalized), len(html_normalized))
-    similarity = common_chars / max_len if max_len > 0 else 0
+    # Calculate similarity using SequenceMatcher (better algorithm)
+    similarity = calculate_similarity(pdf_normalized, html_normalized)
+
+    # More lenient threshold: 70% similarity
+    similarity_threshold = 0.70
 
     if similarity >= similarity_threshold:
-        return True, f"Content is sufficiently similar ({similarity*100:.1f}%)."
+        return True, f"Content is sufficiently similar ({similarity*100:.1f}% match)."
 
-    return False, f"Content mismatch detected. The PDF and HTML files contain different content (similarity: {similarity*100:.1f}%)."
+    # Provide detailed error message
+    pdf_words = len(pdf_normalized.split())
+    html_words = len(html_normalized.split())
+
+    return False, (f"Content mismatch detected. Similarity: {similarity*100:.1f}%. "
+                   f"PDF has {pdf_words} words, HTML has {html_words} words. "
+                   f"Please ensure both files contain the same text content.")
 
 @app.route('/')
 def upload_files():
